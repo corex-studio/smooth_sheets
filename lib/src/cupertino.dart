@@ -10,13 +10,22 @@ import 'modal.dart';
 import 'model.dart';
 import 'viewport.dart';
 
-const _sheetTopInset = 12.0;
-const _minimizedSheetScale = 0.92;
-const _minimizedSheetCornerRadius = 12.0;
 const _barrierColor = Color(0x18000000);
 const _transitionDuration = Duration(milliseconds: 300);
 const Cubic _outgoingTransitionCurve = Curves.easeIn;
 const ThreePointCubic _incomingTransitionCurve = Curves.fastEaseInToSlowEaseOut;
+
+class CupertinoSheetRouteTheme {
+  const CupertinoSheetRouteTheme({
+    this.sheetTopInset = 12.0,
+    this.minimizedSheetScale = 0.92,
+    this.minimizedSheetCornerRadius = 12.0,
+  });
+
+  final double sheetTopInset;
+  final double minimizedSheetScale;
+  final double minimizedSheetCornerRadius;
+}
 
 /// Animated version of [ClipRRect].
 ///
@@ -182,8 +191,10 @@ class _OutgoingTransition extends StatefulWidget {
   const _OutgoingTransition({
     required this.endOffset,
     required this.child,
+    this.theme = const CupertinoSheetRouteTheme(),
   });
 
+  final CupertinoSheetRouteTheme theme;
   final Offset endOffset;
   final Widget child;
 
@@ -225,11 +236,11 @@ class _OutgoingTransitionState extends State<_OutgoingTransition> {
         begin: Offset.zero,
         end: widget.endOffset,
       ),
-      scaleTween: Tween(begin: 1, end: _minimizedSheetScale),
+      scaleTween: Tween(begin: 1, end: widget.theme.minimizedSheetScale),
       child: _ClipRRectTransition(
         radius: Tween(
           begin: 0.0,
-          end: _minimizedSheetCornerRadius,
+          end: widget.theme.minimizedSheetCornerRadius,
         ).animate(_animation),
         child: widget.child,
       ),
@@ -369,14 +380,19 @@ class _SheetModelObserverState extends State<_SheetModelObserver> {
 
 abstract class _BaseCupertinoModalSheetRoute<T> extends PageRoute<T>
     with ModalSheetRouteMixin<T> {
-  _BaseCupertinoModalSheetRoute({super.settings});
+  _BaseCupertinoModalSheetRoute({
+    super.settings,
+    this.theme = const CupertinoSheetRouteTheme(),
+  });
 
   Route<dynamic>? _previousRoute;
+  final CupertinoSheetRouteTheme theme;
 
   @override
   // TODO: Support custom viewport padding.
   EdgeInsets get viewportPadding => EdgeInsets.only(
-        top: MediaQuery.viewPaddingOf(navigator!.context).top + _sheetTopInset,
+        top: MediaQuery.viewPaddingOf(navigator!.context).top +
+            theme.sheetTopInset,
       );
 
   @override
@@ -417,6 +433,7 @@ abstract class _BaseCupertinoModalSheetRoute<T> extends PageRoute<T>
     Widget? child,
   ) {
     return _OutgoingTransition(
+      theme: theme,
       endOffset: Offset(0, MediaQuery.viewPaddingOf(context).top),
       child: child!,
     );
@@ -431,7 +448,8 @@ abstract class _BaseCupertinoModalSheetRoute<T> extends PageRoute<T>
             ?.applyNewIncomingSheetMetrics(metrics);
       },
       child: _OutgoingTransition(
-        endOffset: const Offset(0, -1 * _sheetTopInset),
+        theme: theme,
+        endOffset: Offset(0, -1 * theme.sheetTopInset),
         child: _buildSheetInternal(context),
       ),
     );
@@ -529,6 +547,7 @@ class _PageBasedCupertinoModalSheetRoute<T>
 class CupertinoModalSheetRoute<T> extends _BaseCupertinoModalSheetRoute<T> {
   CupertinoModalSheetRoute({
     super.settings,
+    super.theme,
     required this.builder,
     this.maintainState = true,
     this.barrierDismissible = true,
