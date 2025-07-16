@@ -289,6 +289,7 @@ class _OutgoingTransition extends StatefulWidget {
     required this.endOffset,
     required this.animation,
     required this.child,
+    this.theme = const CupertinoSheetRouteTheme(),
     this.overlayColor,
   });
 
@@ -548,6 +549,8 @@ abstract class _BaseCupertinoModalSheetRoute<T> extends PageRoute<T>
   /// non-[_BaseCupertinoModalSheetRoute] route.
   _PreviousRouteEntry? _previousRouteEntry;
 
+  final CupertinoSheetRouteTheme theme;
+
   @override
   // TODO: Support custom viewport padding.
   EdgeInsets get viewportPadding => EdgeInsets.only(
@@ -604,6 +607,7 @@ abstract class _BaseCupertinoModalSheetRoute<T> extends PageRoute<T>
         animation: previousRouteEntry.outgoingTransitionController,
         endOffset: Offset(0, MediaQuery.viewPaddingOf(context).top),
         overlayColor: overlayColor,
+        theme: theme,
         child: child!,
       );
     };
@@ -619,7 +623,7 @@ abstract class _BaseCupertinoModalSheetRoute<T> extends PageRoute<T>
       },
       child: _OutgoingTransition(
         animation: _outgoingTransitionController,
-        endOffset: const Offset(0, -1 * _sheetTopInset),
+        endOffset: Offset(0, -1 * theme.sheetTopInset),
         overlayColor: overlayColor,
         child: _buildSheetInternal(context),
       ),
@@ -644,6 +648,7 @@ class CupertinoModalSheetPage<T> extends Page<T> {
     this.transitionCurve = _incomingTransitionCurve,
     this.swipeDismissSensitivity = const SwipeDismissSensitivity(),
     this.overlayColor,
+    this.theme = const CupertinoSheetRouteTheme(),
     required this.child,
   });
 
@@ -669,6 +674,8 @@ class CupertinoModalSheetPage<T> extends Page<T> {
 
   /// {@macro cupertino._BaseCupertinoModalSheetRoute.overlayColor}
   final Color? overlayColor;
+
+  final CupertinoSheetRouteTheme theme;
 
   @override
   Route<T> createRoute(BuildContext context) {
