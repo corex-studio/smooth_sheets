@@ -7,6 +7,7 @@ import 'package:navigator_resizable/navigator_resizable.dart';
 
 import 'activity.dart';
 import 'controller.dart';
+import 'draggable.dart';
 import 'gesture_proxy.dart';
 import 'model.dart';
 import 'model_owner.dart';
@@ -25,6 +26,8 @@ mixin _PagedSheetEntry {
   SheetSnapGrid get snapGrid;
 
   SheetOffset get initialOffset;
+
+  SheetScrollConfiguration? get scrollConfiguration;
 
   SheetOffset? _targetOffset;
 
@@ -69,6 +72,10 @@ class _PagedSheetModel extends SheetModel<_PagedSheetModelConfig>
       _currentEntry?.initialOffset ?? const SheetOffset(1);
 
   @override
+  SheetScrollConfiguration get scrollConfiguration =>
+      _currentEntry?.scrollConfiguration ?? const SheetScrollConfiguration();
+
+  @override
   set config(_PagedSheetModelConfig value) {
     if (_currentEntry case final entry? when entry.snapGrid != value.snapGrid) {
       // Always respects the snap grid of the current entry if exists.
@@ -89,6 +96,46 @@ class _PagedSheetModel extends SheetModel<_PagedSheetModelConfig>
     super.beginActivity(activity);
     if (activity is IdleSheetActivity) {
       _currentEntry?._targetOffset = activity.targetOffset;
+    }
+  }
+
+  @override
+  void applyNewLayout(SheetLayout layout) {
+    // Workaround for https://github.com/fujidaiti/smooth_sheets/issues/315:
+    //
+    // When using auto_route and the sheet is fullscreen, the initialOffset is
+    // ignored on the first build. The root cause is that AutoRouter,
+    // which internally builds a Navigator, does not construct the Navigator
+    // during the first frame in which the sheet is built.
+    //
+    // In that first frame, the initialOffset is ignored because _currentEntry
+    // is not yet set. However, AutoRouter sizes itself to match the viewport,
+    // so the 'layout' argument's contentSize equals the viewportSize.
+    // In the following frame, AutoRouter builds the internal Navigator.
+    // If the first route in the Navigator is fullscreen, the 'layout' will
+    // have the exact same values as in the previous frame.
+    // As a result, super.applyNewLayout() returns immediately,
+    // and the initialOffset is not applied.
+    //
+    // This workaround applies a zero-sized layout to the sheet when it is first
+    // built and _currentEntry is still null (implying that the Navigator has
+    // not yet been built). This ensures that super.applyNewLayout updates the
+    // offset to respect the initialOffset once the Navigator is built in the
+    // next frame.
+    if (!hasMetrics && _currentEntry == null) {
+      super.applyNewLayout(
+        ImmutableSheetLayout(
+          contentBaseline: 0,
+          size: Size.zero,
+          contentSize: Size.zero,
+          viewportDynamicOverlap: layout.viewportDynamicOverlap,
+          viewportPadding: layout.viewportPadding,
+          viewportSize: layout.viewportSize,
+          viewportStaticOverlap: layout.viewportStaticOverlap,
+        ),
+      );
+    } else {
+      super.applyNewLayout(layout);
     }
   }
 
@@ -131,7 +178,6 @@ class _PagedSheetModel extends SheetModel<_PagedSheetModelConfig>
 
     beginActivity(
       _RouteTransitionSheetActivity(
-        originRouteOffset: targetOffsetResolver(currentEntry),
         destinationRouteOffset: targetOffsetResolver(nextEntry),
         animation: effectiveAnimation,
         animationCurve: effectiveCurve,
@@ -166,16 +212,15 @@ class _PagedSheetIdleActivity extends IdleSheetActivity<_PagedSheetModel> {
 
 class _RouteTransitionSheetActivity extends SheetActivity<_PagedSheetModel> {
   _RouteTransitionSheetActivity({
-    required this.originRouteOffset,
     required this.destinationRouteOffset,
     required this.animation,
     required this.animationCurve,
   });
 
-  final ValueGetter<double?> originRouteOffset;
   final ValueGetter<double?> destinationRouteOffset;
   final Animation<double> animation;
   final Curve animationCurve;
+  late final double _startPixelOffset;
   late final Animation<double> _effectiveAnimation;
 
   @override
@@ -184,6 +229,7 @@ class _RouteTransitionSheetActivity extends SheetActivity<_PagedSheetModel> {
   @override
   void init(_PagedSheetModel owner) {
     super.init(owner);
+    _startPixelOffset = owner.offset;
     owner.config = owner.config.copyWith(snapGrid: _kDefaultSnapGrid);
     _effectiveAnimation = animation.drive(
       CurveTween(curve: animationCurve),
@@ -198,11 +244,11 @@ class _RouteTransitionSheetActivity extends SheetActivity<_PagedSheetModel> {
 
   void _onAnimationTick() {
     final fraction = _effectiveAnimation.value;
-    final originOffset = originRouteOffset();
     final destOffset = destinationRouteOffset();
 
-    if (originOffset != null && destOffset != null) {
-      owner.offset = lerpDouble(originOffset, destOffset, fraction)!;
+    if (destOffset != null) {
+      owner.offset = lerpDouble(_startPixelOffset, destOffset, fraction)!;
+      owner.didUpdateMetrics();
     }
   }
 }
@@ -250,6 +296,11 @@ class PagedSheet extends StatelessWidget {
     );
     if (builder case final builder?) {
       content = builder(context, content);
+      // Ensure the widget built by the builder is also draggable.
+      content = SheetDraggable(
+        behavior: HitTestBehavior.translucent,
+        child: content,
+      );
     }
 
     return SheetModelOwner(
@@ -390,9 +441,6 @@ abstract class _BasePagedSheetRoute<T> extends PageRoute<T>
   RouteTransitionsBuilder? get transitionsBuilder;
 
   SheetDragConfiguration? get dragConfiguration;
-
-  // TODO: Apply new configuration when the current route changes.
-  SheetScrollConfiguration? get scrollConfiguration;
 
   @override
   Color? get barrierColor => null;

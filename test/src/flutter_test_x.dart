@@ -45,6 +45,28 @@ extension type WidgetTesterX(t.WidgetTester self) implements t.WidgetTester {
     return errors;
   }
 
+  /// Captures all errors thrown during the execution of [pumpAndSettle].
+  ///
+  /// This method covers the cases that [takeException] does not work,
+  /// such as when multiple errors are thrown during [pumpAndSettle].
+  Future<List<FlutterErrorDetails>> pumpAndSettleAndCaptureErrors([
+    Duration duration = const Duration(milliseconds: 100),
+    t.EnginePhase phase = t.EnginePhase.sendSemanticsUpdate,
+    Duration timeout = const Duration(minutes: 10),
+  ]) async {
+    final errors = <FlutterErrorDetails>[];
+    final oldHandler = FlutterError.onError;
+    FlutterError.onError = errors.add;
+
+    try {
+      await pumpAndSettle(duration, phase, timeout);
+    } finally {
+      FlutterError.onError = oldHandler;
+    }
+
+    return errors;
+  }
+
   /// A strict version of WidgetTester.tap that throws an error
   /// when a tap is missed.
   ///
@@ -154,11 +176,12 @@ extension type WidgetTesterX(t.WidgetTester self) implements t.WidgetTester {
     );
   }
 
-  /// Initiates a drag gesture at the specified [downLocation].
+  /// Initiates a drag gesture at the specified [downLocation],
+  /// moving the pointer by [t.kDragSlopDefault] pixels in the
+  /// direction of [axisDirection].
   ///
-  /// The [axisDirection] determines the initial direction of the drag gesture.
   /// For example, if [axisDirection] is [AxisDirection.down],
-  /// the gesture moves downward.
+  /// the gesture moves the pointer downward by [t.kDragSlopDefault] pixels.
   ///
   /// This method emits a pointer-down event and a drag-start event but
   /// does not generate drag-update events.
@@ -182,6 +205,22 @@ extension type WidgetTesterX(t.WidgetTester self) implements t.WidgetTester {
     return gesture;
   }
 
+  /// Attempts to drag the given widget upward by the given [deltaY],
+  /// by starting a drag in the middle of the widget.
+  Future<void> dragUpward(
+    t.FinderBase<Element> finder, {
+    required double deltaY,
+  }) =>
+      drag(finder, Offset(0, -deltaY));
+
+  /// Attempts to drag the given widget downward by the given [deltaY],
+  /// by starting a drag in the middle of the widget.
+  Future<void> dragDownward(
+    t.FinderBase<Element> finder, {
+    required double deltaY,
+  }) =>
+      drag(finder, Offset(0, deltaY));
+
   /// Returns the local rectangle of the widget specified by the [finder].
   ///
   /// If [ancestor] is specified, the rectangle is relative to the ancestor.
@@ -200,5 +239,19 @@ extension type WidgetTesterX(t.WidgetTester self) implements t.WidgetTester {
     } else {
       return Offset.zero & box.size;
     }
+  }
+}
+
+extension TestGestureX on t.TestGesture {
+  /// Send a move event moving the pointer upward by the given [deltaY].
+  Future<void> moveUpwardBy(double deltaY) async {
+    assert(deltaY >= 0);
+    await moveBy(Offset(0, -deltaY));
+  }
+
+  /// Send a move event moving the pointer downward by the given [deltaY].
+  Future<void> moveDownwardBy(double deltaY) async {
+    assert(deltaY >= 0);
+    await moveBy(Offset(0, deltaY));
   }
 }

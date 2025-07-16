@@ -331,4 +331,144 @@ void main() {
       },
     );
   });
+
+  group('WidgetTesterX.pumpAndSettleAndCaptureErrors', () {
+    testWidgets('should return empty list when no errors occur',
+        (tester) async {
+      await tester.pumpWidget(Container());
+      final errors = await tester.pumpAndSettleAndCaptureErrors();
+      expect(errors, isEmpty);
+    });
+
+    testWidgets('should capture multiple errors', (tester) async {
+      final error1 = FlutterError('Error on first build');
+      final error2 = FlutterError('Error on second build');
+      var buildCount = 0;
+
+      await tester.pumpWidget(
+        Builder(
+          builder: (context) {
+            switch (++buildCount) {
+              case 1:
+                WidgetsBinding.instance.addPostFrameCallback((_) {
+                  (context as Element).markNeedsBuild();
+                });
+
+              case 2:
+                WidgetsBinding.instance.addPostFrameCallback((_) {
+                  (context as Element).markNeedsBuild();
+                });
+                throw error1;
+
+              case 3:
+                throw error2;
+            }
+
+            return Container();
+          },
+        ),
+      );
+
+      // Trigger the build phases that throw errors
+      final errors = await tester.pumpAndSettleAndCaptureErrors();
+
+      expect(errors, hasLength(2));
+      expect(errors[0].exception, error1);
+      expect(errors[1].exception, error2);
+    });
+
+    testWidgets('should restore original FlutterError.onError', (tester) async {
+      final originalOnError = FlutterError.onError;
+      await tester.pumpWidget(Container());
+      await tester.pumpAndSettleAndCaptureErrors();
+      expect(FlutterError.onError, same(originalOnError));
+    });
+  });
+
+  group('TestGestureX', () {
+    late Widget testWidget;
+    DragUpdateDetails? dragUpdateDetails;
+
+    setUp(() {
+      dragUpdateDetails = null;
+      testWidget = GestureDetector(
+        onPanUpdate: (details) {
+          dragUpdateDetails = details;
+        },
+        child: Container(
+          width: 200,
+          height: 200,
+          color: Colors.white,
+        ),
+      );
+    });
+
+    testWidgets('moveUpwardBy should move pointer upward by deltaY',
+        (tester) async {
+      await tester.pumpWidget(testWidget);
+      final center = tester.getCenter(find.byType(Container));
+
+      final gesture = await tester.startGesture(center);
+      await gesture.moveUpwardBy(50.0);
+
+      expect(dragUpdateDetails?.delta.dx, 0.0);
+      expect(dragUpdateDetails?.delta.dy, -50.0);
+
+      await gesture.up();
+    });
+
+    testWidgets('moveDownwardBy should move pointer downward by deltaY',
+        (tester) async {
+      await tester.pumpWidget(testWidget);
+      final center = tester.getCenter(find.byType(Container));
+
+      final gesture = await tester.startGesture(center);
+      await gesture.moveDownwardBy(30.0);
+
+      expect(dragUpdateDetails?.delta.dx, 0.0);
+      expect(dragUpdateDetails?.delta.dy, 30.0);
+
+      await gesture.up();
+    });
+  });
+
+  group('WidgetTesterX.dragUpward and dragDownward', () {
+    late Widget testWidget;
+    DragUpdateDetails? dragUpdateDetails;
+
+    setUp(() {
+      dragUpdateDetails = null;
+      testWidget = MaterialApp(
+        home: GestureDetector(
+          onPanUpdate: (details) {
+            dragUpdateDetails = details;
+          },
+          child: Container(
+            key: Key('draggable'),
+            width: 200,
+            height: 200,
+            color: Colors.blue,
+          ),
+        ),
+      );
+    });
+
+    testWidgets(
+      'dragUpward should drag widget upward by deltaY',
+      (tester) async {
+        await tester.pumpWidget(testWidget);
+        await tester.dragUpward(find.byKey(Key('draggable')), deltaY: 20);
+        expect(dragUpdateDetails?.delta, Offset(0, -20));
+      },
+    );
+
+    testWidgets(
+      'dragDownward should drag widget downward by deltaY',
+      (tester) async {
+        await tester.pumpWidget(testWidget);
+        await tester.dragDownward(find.byKey(Key('draggable')), deltaY: 20);
+        expect(dragUpdateDetails?.delta, Offset(0, 20));
+      },
+    );
+  });
 }

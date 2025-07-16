@@ -1,8 +1,8 @@
 import 'dart:async';
 import 'dart:math';
 
-import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:meta/meta.dart';
 
 import 'drag.dart';
 import 'gesture_proxy.dart';
@@ -171,6 +171,10 @@ mixin ModalSheetRouteMixin<T> on ModalRoute<T> {
   @override
   bool get opaque => false;
 
+  // Provides access to the AnimationController of this route that is
+  // marked as protected, allowing it to be used by SheetDismissible.
+  AnimationController get _controller => controller!;
+
   /// The curve used for the transition animation.
   ///
   /// In the middle of a dismiss gesture drag,
@@ -180,13 +184,6 @@ mixin ModalSheetRouteMixin<T> on ModalRoute<T> {
   Curve get effectiveCurve => (navigator?.userGestureInProgress ?? false)
       ? Curves.linear
       : transitionCurve;
-
-  /// Lazily initialized in case `swipeDismissible` is set to false.
-  late final _swipeDismissibleController = _SwipeDismissibleController(
-    route: this,
-    transitionController: controller!,
-    sensitivity: swipeDismissSensitivity,
-  );
 
   Widget buildSheet(BuildContext context);
 
@@ -198,13 +195,11 @@ mixin ModalSheetRouteMixin<T> on ModalRoute<T> {
   ) {
     return SheetViewport(
       padding: viewportPadding,
-      child: switch (swipeDismissible) {
-        true => SheetGestureProxy(
-            proxy: _swipeDismissibleController,
-            child: buildSheet(context),
-          ),
-        false => buildSheet(context),
-      },
+      child: _SheetDismissible(
+        enabled: swipeDismissible,
+        sensitivity: swipeDismissSensitivity,
+        child: buildSheet(context),
+      ),
     );
   }
 
@@ -258,26 +253,116 @@ mixin ModalSheetRouteMixin<T> on ModalRoute<T> {
   }
 }
 
-class _SwipeDismissibleController with SheetGestureProxyMixin {
-  _SwipeDismissibleController({
-    required this.route,
-    required this.transitionController,
-    required this.sensitivity,
+/// Enables swipe-to-dismiss functionality for a modal sheet route.
+///
+/// Must be used as the content of a route that implements
+/// [ModalSheetRouteMixin], and must be an ancestor of the sheet.
+class _SheetDismissible extends StatefulWidget {
+  const _SheetDismissible({
+    this.enabled = true,
+    this.sensitivity = const SwipeDismissSensitivity(),
+    required this.child,
   });
 
-  final ModalRoute<dynamic> route;
-  final AnimationController transitionController;
+  final bool enabled;
   final SwipeDismissSensitivity sensitivity;
+  final Widget child;
 
-  BuildContext get _context => route.subtreeContext!;
+  @override
+  State<_SheetDismissible> createState() => _SheetDismissibleState();
+}
 
-  bool get _isUserGestureInProgress => route.navigator!.userGestureInProgress;
+class _SheetDismissibleState extends State<_SheetDismissible>
+    with SheetGestureProxyMixin {
+  /// The global key for the [_SheetDismissible.child].
+  ///
+  /// Used to prevent the state of the [_SheetDismissible.child] from being
+  /// discarded when the [_SheetDismissible.enabled] is dynamically changed.
+  final GlobalKey<State<StatefulWidget>> _childGlobalKey = GlobalKey();
+
+  late ModalSheetRouteMixin<dynamic> _route;
+
+  AnimationController get _transitionController => _route._controller;
+
+  bool get _isUserGestureInProgress => _route.navigator!.userGestureInProgress;
+
+  Size get _navigatorSize => _route.navigator!.context.size!;
+
+  final List<_SheetPopScopeState<dynamic>> _popScopes = [];
+
+  /// Whether the modal can be dismissed by the swipe gesture.
+  ///
+  /// The gesture is still available if [_isGestureEnabled] is true,
+  /// even if this returns false.
+  bool get _canPopByGesture =>
+      widget.enabled && _route.popDisposition == RoutePopDisposition.pop;
+
+  /// Whether the gesture is available.
+  ///
+  /// The modal cannot be dismissed if [_canPopByGesture] is false,
+  /// even if this returns true.
+  bool get _isGestureEnabled =>
+      widget.enabled && _popScopes.every((it) => it.isGestureEnabled.value);
+
+  void registerPopScope(_SheetPopScopeState<dynamic> popScope) {
+    assert(!_popScopes.contains(popScope));
+    popScope.isGestureEnabled.addListener(_onIsGestureEnabledMayChanged);
+    _popScopes.add(popScope);
+    _onIsGestureEnabledMayChanged();
+  }
+
+  void unregisterPopScope(_SheetPopScopeState<dynamic> popScope) {
+    assert(_popScopes.contains(popScope));
+    popScope.isGestureEnabled.removeListener(_onIsGestureEnabledMayChanged);
+    _popScopes.remove(popScope);
+    _onIsGestureEnabledMayChanged();
+  }
+
+  void _onIsGestureEnabledMayChanged() {
+    // Since this method is invoked during the build phase due to changes
+    // in the configuration of a descendant SheetPopScope, we need to
+    // schedule another frame to ensure that the updated _isGestureEnabled
+    // is also reflected in the state of this widget.
+    WidgetsBinding.instance.scheduleFrameCallback((_) {
+      if (!_isDisposed) setState(() {});
+    });
+  }
+
+  var _isDisposed = false;
+
+  @override
+  void dispose() {
+    _popScopes.clear();
+    super.dispose();
+    _isDisposed = true;
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    assert(
+      context.findAncestorStateOfType<_SheetDismissibleState>() == null,
+      'Incorrect usage of SheetDismissible: '
+      'it must not be used as a descendant of another SheetDismissible.',
+    );
+
+    final route = ModalRoute.of(context);
+
+    assert(
+      route != null && route is ModalSheetRouteMixin<dynamic>,
+      'Incorrect usage of SheetDismissible: '
+      'it must be used as a descendant of a ModalRoute '
+      'that implements ModalSheetRouteMixin.',
+    );
+
+    _route = route! as ModalSheetRouteMixin<dynamic>;
+  }
 
   set _isUserGestureInProgress(bool inProgress) {
     if (inProgress && !_isUserGestureInProgress) {
-      route.navigator!.didStartUserGesture();
+      _route.navigator!.didStartUserGesture();
     } else if (!inProgress && _isUserGestureInProgress) {
-      route.navigator!.didStopUserGesture();
+      _route.navigator!.didStopUserGesture();
     }
   }
 
@@ -296,13 +381,13 @@ class _SwipeDismissibleController with SheetGestureProxyMixin {
     final minPDC = minPotentialDeltaConsumption.dy;
     assert(details.delta.dy * minPDC >= 0);
     final double effectiveDragDelta;
-    if (!transitionController.isCompleted) {
+    if (!_transitionController.isCompleted) {
       // Dominantly use the full pixels if it is in the middle of a transition.
       effectiveDragDelta = dragDelta;
     } else if (dragDelta < 0 &&
-        FloatComp.distance(MediaQuery.devicePixelRatioOf(_context))
+        FloatComp.distance(MediaQuery.devicePixelRatioOf(context))
             .isNotApprox(dragDelta, minPDC) &&
-        MediaQuery.viewInsetsOf(_context).bottom == 0) {
+        MediaQuery.viewInsetsOf(context).bottom == 0) {
       // If the drag is downwards and the sheet may not consume the full pixels,
       // then use the remaining pixels as the effective drag delta.
       effectiveDragDelta = switch (details.axisDirection) {
@@ -315,8 +400,8 @@ class _SwipeDismissibleController with SheetGestureProxyMixin {
       return super.onDragUpdate(details, minPotentialDeltaConsumption);
     }
 
-    final viewport = _context.size!.height;
-    final visibleViewport = viewport * transitionController.value;
+    final viewport = _navigatorSize.height;
+    final visibleViewport = viewport * _transitionController.value;
     assert(0 <= visibleViewport && visibleViewport <= viewport);
     final newVisibleViewport =
         (visibleViewport + effectiveDragDelta).clamp(0, viewport);
@@ -325,7 +410,7 @@ class _SwipeDismissibleController with SheetGestureProxyMixin {
     final transitionProgress = newVisibleViewport / viewport;
     assert(0 <= transitionProgress && transitionProgress <= 1);
     _isUserGestureInProgress = transitionProgress < 1;
-    transitionController.value = transitionProgress;
+    _transitionController.value = transitionProgress;
 
     final viewportDelta = newVisibleViewport - visibleViewport;
     final unconsumedDragDelta = switch (details.axisDirection) {
@@ -363,12 +448,12 @@ class _SwipeDismissibleController with SheetGestureProxyMixin {
     required Velocity velocity,
     required VerticalDirection axisDirection,
   }) {
-    if (!_isUserGestureInProgress || transitionController.isAnimating) {
+    if (!_isUserGestureInProgress || _transitionController.isAnimating) {
       return false;
     }
 
-    final viewportHeight = _context.size!.height;
-    final draggedDistance = viewportHeight * (1 - transitionController.value);
+    final viewportHeight = _navigatorSize.height;
+    final draggedDistance = viewportHeight * (1 - _transitionController.value);
 
     final effectiveVelocity = switch (axisDirection) {
       VerticalDirection.up => velocity.pixelsPerSecond.dy / viewportHeight,
@@ -377,37 +462,38 @@ class _SwipeDismissibleController with SheetGestureProxyMixin {
     };
 
     final bool invokePop;
-    if (MediaQuery.viewInsetsOf(_context).bottom > 0) {
+    if (MediaQuery.viewInsetsOf(context).bottom > 0) {
       // The on-screen keyboard is open.
       invokePop = false;
     } else if (effectiveVelocity < 0) {
       // Flings down.
-      invokePop = effectiveVelocity.abs() > sensitivity.minFlingVelocityRatio;
-    } else if (FloatComp.velocity(MediaQuery.devicePixelRatioOf(_context))
+      invokePop =
+          effectiveVelocity.abs() > widget.sensitivity.minFlingVelocityRatio;
+    } else if (FloatComp.velocity(MediaQuery.devicePixelRatioOf(context))
         .isApprox(effectiveVelocity, 0)) {
       assert(draggedDistance >= 0);
       // Dragged down enough to dismiss.
-      invokePop = draggedDistance > sensitivity.minDragDistance;
+      invokePop = draggedDistance > widget.sensitivity.minDragDistance;
     } else {
       // Flings up.
       invokePop = false;
     }
 
-    final didPop = invokePop && route.popDisposition == RoutePopDisposition.pop;
+    final didPop = invokePop && _canPopByGesture;
 
     if (didPop) {
-      route.navigator!.pop();
-    } else if (!transitionController.isCompleted) {
+      _route.navigator!.pop();
+    } else if (!_transitionController.isCompleted) {
       // The route won't be popped, so animate the transition
       // back to the origin.
-      final fraction = 1.0 - transitionController.value;
+      final fraction = 1.0 - _transitionController.value;
       final animationTime = max(
-        (route.transitionDuration.inMilliseconds * fraction).floor(),
+        (_route.transitionDuration.inMilliseconds * fraction).floor(),
         _minReleasedPageForwardAnimationTime,
       );
 
       const completedAnimationValue = 1.0;
-      unawaited(transitionController.animateTo(
+      unawaited(_transitionController.animateTo(
         completedAnimationValue,
         duration: Duration(milliseconds: animationTime),
         curve: _releasedPageForwardAnimationCurve,
@@ -439,7 +525,8 @@ class _SwipeDismissibleController with SheetGestureProxyMixin {
     // 3. The modal route is removed from the Navigator's subtree.
     // 4. Route.didPop() is called, initiating the pop transition animation
     //    by calling AnimationController.reverse().
-    if (transitionController.isCompleted || transitionController.isDismissed) {
+    if (_transitionController.isCompleted ||
+        _transitionController.isDismissed) {
       _isUserGestureInProgress = false;
     } else {
       late final AnimationStatusListener animationStatusCallback;
@@ -447,17 +534,28 @@ class _SwipeDismissibleController with SheetGestureProxyMixin {
         if (status == AnimationStatus.completed ||
             status == AnimationStatus.dismissed) {
           _isUserGestureInProgress = false;
-          transitionController.removeStatusListener(animationStatusCallback);
+          _transitionController.removeStatusListener(animationStatusCallback);
         }
       };
-      transitionController.addStatusListener(animationStatusCallback);
+      _transitionController.addStatusListener(animationStatusCallback);
     }
 
     if (invokePop) {
-      route.onPopInvokedWithResult(didPop, null);
+      _route.onPopInvokedWithResult(didPop, null);
     }
 
     return true;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final child = KeyedSubtree(
+      key: _childGlobalKey,
+      child: widget.child,
+    );
+    return _isGestureEnabled
+        ? SheetGestureProxy(proxy: this, child: child)
+        : child;
   }
 }
 
@@ -498,4 +596,155 @@ class SwipeDismissSensitivity {
   // ignore: lines_longer_than_80_chars
   // TODO: Use the sheet position as the threshold instead of the absolute dragging distance.
   final double minDragDistance;
+}
+
+/// Manages the back navigation gesture for the current modal sheet.
+///
+/// This widget is a wrapper around [PopScope], providing additional control
+/// over the swipe-to-dismiss gesture in a modal sheet.
+/// The behavior of the modal sheet is determined by the [canPop] property and
+/// whether [onPopInvokedWithResult] is provided. The table below describes
+/// how the sheet behaves based on these properties:
+///
+/// | Behavior                        | Implementation |
+/// |:------------------------------:|:--------------:|
+/// | Can pop; Gesture is enabled    | `SheetPopScope(canPop: true)` |
+// ignore: lines_longer_than_80_chars
+/// | Cannot pop; Gesture is enabled | `SheetPopScope(canPop: false, onPopInvokedWithResult: nonNullCallback)` |
+// ignore: lines_longer_than_80_chars
+/// | Cannot pop; Gesture is disabled| `SheetPopScope(canPop: false, onPopInvokedWithResult: null)` |
+///
+/// Note that the gesture is always disabled if
+/// [ModalSheetRouteMixin.swipeDismissible] on the parent route is false.
+///
+/// Typically, this widget is placed above a sheet widget:
+///
+/// ```dart
+/// ModalSheetRoute(
+///   swipeDismissible: true,
+///   builder: (context) => SheetPopScope(
+///     canPop: false,
+///     onPopInvokedWithResult: (didPop, result) {...},
+///     child: Sheet(child: Container()),
+///   ),
+/// );
+/// ```
+///
+/// However, it can also be placed deeper within the sheet's widget tree.
+/// This is useful when you want to dynamically control gesture availability
+/// in a widget's build method:
+///
+/// ```dart
+/// class SheetContent extends StatelessWidget {
+///   @override
+///   Widget build(BuildContext context) {
+///     // If false, the modal cannot be popped, and the gesture is also disabled
+///     // (and vice versa).
+///     final canPopByGesture = ...;
+///     return SheetPopScope(
+///       canPop: canPopByGesture,
+///       onPopInvokedWithResult: canPopByGesture
+///         ? (didPop, result) {...}
+///         : null,
+///       child: Sheet(child: Container()),
+///     );
+///   }
+/// }
+/// ```
+///
+/// ## Compatibility with PopScope
+///
+/// While [SheetPopScope] offers fine-grained control, the standard [PopScope]
+/// widget can also manage a modal sheet's dismissibility. However, [PopScope]
+/// lacks the ability to control the swipe-to-dismiss gesture.
+///
+/// Assuming [ModalSheetRouteMixin.swipeDismissible] is `true`, [PopScope]
+/// behaves similarly to [SheetPopScope] in the following cases:
+///
+/// | Behavior                        | Implementation             |
+/// |:------------------------------:|:--------------------------:|
+/// | Can pop; Gesture is enabled    | `PopScope(canPop: true)`   |
+/// | Cannot pop; Gesture is enabled | `PopScope(canPop: false)`  |
+/// | Cannot pop; Gesture is disabled| ❌ Not possible             |
+///
+/// Note that the first two cases are equivalent to [SheetPopScope],
+/// but the third is not possible with [PopScope].
+class SheetPopScope<T> extends StatefulWidget {
+  /// Creates a widget that controls the pop behavior of a modal sheet.
+  const SheetPopScope({
+    super.key,
+    this.canPop = true,
+    this.onPopInvokedWithResult,
+    required this.child,
+  });
+
+  /// When false, blocks the current route from being popped.
+  ///
+  /// Even if this is false, the swipe gesture is enabled, if
+  /// [onPopInvokedWithResult] is not null and the parent
+  /// [ModalSheetRouteMixin.swipeDismissible] is true.
+  ///
+  /// See [PopScope.canPop] for more details.
+  final bool canPop;
+
+  /// A callback that is called when a pop is attempted on the current route,
+  /// including when the swipe gesture is performed.
+  ///
+  /// If this is not null and the parent [ModalSheetRouteMixin.swipeDismissible]
+  /// is true, the swipe gesture is enabled even if [canPop] is false.
+  ///
+  /// See [PopScope.onPopInvokedWithResult] for more details.
+  final PopInvokedWithResultCallback<T>? onPopInvokedWithResult;
+
+  /// The widget below this widget in the tree.
+  final Widget child;
+
+  bool get _isGestureEnabled => canPop || onPopInvokedWithResult != null;
+
+  @override
+  State<SheetPopScope<T>> createState() => _SheetPopScopeState<T>();
+}
+
+class _SheetPopScopeState<T> extends State<SheetPopScope<T>> {
+  late final ValueNotifier<bool> isGestureEnabled;
+  _SheetDismissibleState? _sheetDismissible;
+
+  @override
+  void initState() {
+    super.initState();
+    isGestureEnabled = ValueNotifier(widget._isGestureEnabled);
+  }
+
+  @override
+  void dispose() {
+    _sheetDismissible?.unregisterPopScope(this);
+    isGestureEnabled.dispose();
+    super.dispose();
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final sheetDismissible =
+        context.findAncestorStateOfType<_SheetDismissibleState>();
+    if (sheetDismissible != _sheetDismissible) {
+      _sheetDismissible?.unregisterPopScope(this);
+      _sheetDismissible = sheetDismissible?..registerPopScope(this);
+    }
+  }
+
+  @override
+  void didUpdateWidget(SheetPopScope<T> oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    isGestureEnabled.value = widget._isGestureEnabled;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return PopScope(
+      canPop: widget.canPop,
+      onPopInvokedWithResult: widget.onPopInvokedWithResult,
+      child: widget.child,
+    );
+  }
 }

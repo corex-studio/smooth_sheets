@@ -1194,6 +1194,154 @@ void main() {
       expect(env.getSheetRect(tester).top, testScreenSize.height - 500);
     });
   });
+
+  group('Regression test', () {
+    // https://github.com/fujidaiti/smooth_sheets/issues/309
+    testWidgets(
+      'Unstable route transition when pop a route during snapping animation',
+      (tester) async {
+        final controller = SheetController();
+        final navigatorKey = GlobalKey<NavigatorState>();
+        const sheetKey = Key('sheet');
+        await tester.pumpWidget(
+          Directionality(
+            textDirection: TextDirection.ltr,
+            child: SheetViewport(
+              child: PagedSheet(
+                key: sheetKey,
+                controller: controller,
+                navigator: Navigator(
+                  key: navigatorKey,
+                  onGenerateRoute: (_) {
+                    return PagedSheetRoute(
+                      builder: (_) => _TestPage(
+                        key: Key('a'),
+                        height: 300,
+                      ),
+                    );
+                  },
+                ),
+              ),
+            ),
+          ),
+        );
+
+        unawaited(
+          navigatorKey.currentState!.push(
+            PagedSheetRoute(
+              snapGrid: SheetSnapGrid(
+                minFlingSpeed: 50,
+                snaps: [SheetOffset(0.5), SheetOffset(1)],
+              ),
+              builder: (_) => _TestPage(
+                key: Key('b'),
+                height: 600,
+              ),
+            ),
+          ),
+        );
+
+        await tester.pumpAndSettle();
+        expect(find.byId('b'), findsOneWidget);
+        expect(tester.getRect(find.byId('b')).top, 0);
+
+        final offsetHistory = <double>[];
+        controller.addListener(() {
+          offsetHistory.add(controller.value!);
+        });
+
+        await tester.fling(find.byId('b'), Offset(0, 100), 200);
+        await tester.pump(Duration(milliseconds: 500));
+        final sheetTopBeforePop = tester.getRect(find.byId('b')).top;
+        expect(
+          sheetTopBeforePop,
+          allOf(greaterThan(0), lessThan(300)),
+          reason: 'The sheet is in the middle of the snapping animation',
+        );
+
+        navigatorKey.currentState!.pop();
+        await tester.pump();
+        expect(
+          tester.getRect(find.byId('b')).top,
+          sheetTopBeforePop,
+          reason: 'The sheet position should be preserved',
+        );
+
+        await tester.pumpAndSettle();
+        expect(offsetHistory, isMonotonicallyDecreasing);
+      },
+    );
+
+    // https://github.com/fujidaiti/smooth_sheets/issues/305
+    testWidgets(
+      'Sheet cannot be dragged when the drag starts at shared top/bottom bar '
+      'built in PagedSheet.builder',
+      (tester) async {
+        final controller = SheetController();
+        final navigatorKey = GlobalKey<NavigatorState>();
+        const topBarKey = Key('topBar');
+        const bottomBarKey = Key('bottomBar');
+        const pageKey = Key('page');
+
+        await tester.pumpWidget(
+          Directionality(
+            textDirection: TextDirection.ltr,
+            child: SheetViewport(
+              child: PagedSheet(
+                controller: controller,
+                builder: (context, child) {
+                  return SheetContentScaffold(
+                    extendBodyBehindTopBar: true,
+                    extendBodyBehindBottomBar: true,
+                    topBar: Container(
+                      key: topBarKey,
+                      height: 50,
+                      color: Colors.blue,
+                    ),
+                    body: child,
+                    bottomBar: Container(
+                      key: bottomBarKey,
+                      height: 50,
+                      color: Colors.green,
+                    ),
+                  );
+                },
+                navigator: Navigator(
+                  key: navigatorKey,
+                  onGenerateRoute: (_) {
+                    return PagedSheetRoute(
+                      snapGrid: SheetSnapGrid.stepless(),
+                      builder: (_) => _TestPage(key: pageKey, height: 300),
+                    );
+                  },
+                ),
+              ),
+            ),
+          ),
+        );
+
+        await tester.pumpAndSettle();
+        expect(controller.value, 300);
+
+        // Drag from top bar
+        final initialOffsetBeforeTopDrag = controller.value!;
+        await tester.drag(find.byKey(topBarKey), const Offset(0, 50));
+        await tester.pumpAndSettle();
+        expect(controller.value, lessThan(initialOffsetBeforeTopDrag));
+
+        // Reset to full offset
+        unawaited(controller.animateTo(SheetOffset.absolute(300)));
+        await tester.pumpAndSettle();
+        expect(controller.value, 300);
+
+        // Drag from bottom bar
+        final initialOffsetBeforeBottomDrag = controller.value!;
+        await tester.drag(find.byKey(bottomBarKey), const Offset(0, 50));
+        await tester.pumpAndSettle();
+        expect(controller.value, lessThan(initialOffsetBeforeBottomDrag));
+      },
+    );
+  });
 }
 
 class _TestPage extends StatelessWidget {
